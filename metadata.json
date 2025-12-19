@@ -1,0 +1,7 @@
+{
+  "name": "Optical Spy Scope",
+  "description": "A cyberpunk-styled optical oscilloscope for signal analysis via camera brightness tracking. Designed for Android WebView.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
