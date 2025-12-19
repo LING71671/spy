@@ -13,7 +13,7 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
   // Signal processing state refs
   const historyRef = useRef<number[]>([]);
   const signalBufferRef = useRef<number[]>([]);
-  const animationFrameRef = useRef<number>();
+  const animationFrameRef = useRef<number | null>(null);
   
   const SAMPLE_SIZE = 50; // 50x50 pixel center
   const HISTORY_LENGTH = 50; // For moving average (High-pass filter)
