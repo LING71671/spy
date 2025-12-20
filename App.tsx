@@ -10,7 +10,7 @@ const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
 
 export default function App() {
-  const [gain, setGain] = useState<number>(1);
+  const [gain, setGain] = useState<number>(50); // Default gain increased for AC coupled mode
   const [devices, setDevices] = useState<VideoDevice[]>([]);
   const [currentDeviceIndex, setCurrentDeviceIndex] = useState<number>(0);
   const [logs, setLogs] = useState<import('./types').LogEntry[]>([]);
@@ -94,11 +94,7 @@ export default function App() {
   }, [devices, currentDeviceIndex]);
 
   const handleReset = useCallback(() => {
-    // Force a re-mount of the visualizer or reset its internal state
-    // For now, we just log, but the Visualizer will listen to a key if needed.
-    // A simple way is to toggle gain briefly or we can expose a ref.
-    // For simplicity in this structure, we'll reload the window if things get really stuck, 
-    // or we can pass a 'resetTrigger' prop.
+    // Force a re-mount/reload to reset baseline and state
     window.location.reload(); 
   }, []);
 

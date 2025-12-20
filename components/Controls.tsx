@@ -20,16 +20,16 @@ export const Controls: React.FC<ControlsProps> = ({
       {/* Gain Control */}
       <div className="flex flex-col gap-1">
          <div className="flex justify-between items-end">
-            <label className="text-cyber-green font-bold text-sm tracking-wider">SIGNAL GAIN</label>
+            <label className="text-cyber-green font-bold text-sm tracking-wider">AC SIGNAL GAIN</label>
             <span className="text-cyber-green font-mono text-xl font-bold">{gain}x</span>
          </div>
          
          <div className="relative h-10 flex items-center">
             <input 
                 type="range" 
-                min="1" 
-                max="50" 
-                step="1"
+                min="50" 
+                max="500" 
+                step="10"
                 value={gain} 
                 onChange={(e) => setGain(Number(e.target.value))}
                 className="
@@ -65,9 +65,9 @@ export const Controls: React.FC<ControlsProps> = ({
         
         <button 
           onClick={onReset}
-          className="w-24 bg-red-950/40 border border-red-500 text-red-500 rounded active:bg-red-500 active:text-black transition-all duration-100 font-bold text-lg touch-manipulation"
+          className="w-32 bg-red-950/40 border border-red-500 text-red-500 rounded active:bg-red-500 active:text-black transition-all duration-100 font-bold text-xs uppercase touch-manipulation"
         >
-          RESET
+          RESET BASELINE
         </button>
       </div>
     </div>
