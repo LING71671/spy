@@ -3,6 +3,7 @@ import React from 'react';
 interface ControlsProps {
   onSwitchCamera: () => void;
   onReset: () => void;
+  onClearLog: () => void;
   gain: number;
   setGain: (val: number) => void;
   threshold: number;
@@ -13,6 +14,7 @@ interface ControlsProps {
 export const Controls: React.FC<ControlsProps> = ({ 
   onSwitchCamera, 
   onReset, 
+  onClearLog,
   gain, 
   setGain,
   threshold,
@@ -29,7 +31,7 @@ export const Controls: React.FC<ControlsProps> = ({
               <span className="text-cyber-green font-mono text-sm font-bold">{gain}x</span>
            </div>
            <input 
-              type="range" min="50" max="500" step="10"
+              type="range" min="100" max="1000" step="50"
               value={gain} onChange={(e) => setGain(Number(e.target.value))}
               className="w-full accent-cyber-green h-2 bg-cyber-darkGreen rounded-full appearance-none"
            />
@@ -42,7 +44,7 @@ export const Controls: React.FC<ControlsProps> = ({
               <span className="text-cyan-400 font-mono text-sm font-bold">{threshold}</span>
            </div>
            <input 
-              type="range" min="5" max="100" step="1"
+              type="range" min="2" max="50" step="1"
               value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}
               className="w-full accent-cyan-400 h-2 bg-cyber-darkGreen rounded-full appearance-none"
            />
@@ -50,19 +52,26 @@ export const Controls: React.FC<ControlsProps> = ({
       </div>
       
       {/* Action Buttons */}
-      <div className="flex gap-3 w-full h-10">
+      <div className="flex gap-2 w-full h-10">
         <button 
           onClick={onSwitchCamera}
-          className="flex-1 bg-cyber-darkGreen border border-cyber-green text-cyber-green rounded hover:bg-cyber-green hover:text-black transition-all font-bold text-xs"
+          className="flex-1 bg-cyber-darkGreen border border-cyber-green text-cyber-green rounded hover:bg-cyber-green hover:text-black transition-all font-bold text-[10px]"
         >
           CAM: {currentDeviceLabel?.split(' ')[0] || 'SWITCH'}
         </button>
         
         <button 
           onClick={onReset}
-          className="w-24 bg-red-950/40 border border-red-500 text-red-500 rounded hover:bg-red-500 hover:text-white transition-all font-bold text-xs"
+          className="w-20 bg-red-950/40 border border-red-500 text-red-500 rounded hover:bg-red-500 hover:text-white transition-all font-bold text-[10px]"
         >
           RESET
+        </button>
+        
+        <button 
+          onClick={onClearLog}
+          className="w-20 bg-gray-900 border border-gray-500 text-gray-400 rounded hover:bg-gray-700 hover:text-white transition-all font-bold text-[10px]"
+        >
+          CLEAR
         </button>
       </div>
     </div>

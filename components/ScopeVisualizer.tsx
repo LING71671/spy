@@ -4,10 +4,10 @@ interface ScopeVisualizerProps {
   deviceId?: string;
   gain: number;
   threshold: number;
-  onDecode: (text: string) => void;
+  onCharDecoded: (char: string) => void;
 }
 
-export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain, threshold, onDecode }) => {
+export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain, threshold, onCharDecoded }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -15,17 +15,21 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
   
   // DSP State
   const baselineRef = useRef<number | null>(null);
-  const digitalStateRef = useRef<number>(0); // 0 or 1
+  const digitalStateRef = useRef<number>(0);
   
-  // Buffers
+  // Averaging Buffer for Smoothing
+  const rawHistoryRef = useRef<number[]>([]); 
+  
+  // Buffers for visualization
   const BUFFER_SIZE = 300;
   const signalBufferRef = useRef<number[]>([]);
   const digitalBufferRef = useRef<number[]>([]);
   
-  // Decoding History
-  const historyLimit = 600; // Store last 600 frames (approx 10-20 seconds) for decoding
-  const bitHistoryRef = useRef<number[]>([]);
-  const lastDecodeTimeRef = useRef<number>(0);
+  // Manchester Decoder State
+  const runLengthRef = useRef<number>(0);
+  const bitAccumulatorRef = useRef<string>("");
+  const lastDigitalStateRef = useRef<number>(0);
+  const pendingShortRef = useRef<number | null>(null);
 
   const animationFrameRef = useRef<number | null>(null);
   const SAMPLE_SIZE = 50;
@@ -64,18 +68,23 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
       }
+      
+      // Reset State
       baselineRef.current = null;
-      bitHistoryRef.current = [];
+      rawHistoryRef.current = [];
+      runLengthRef.current = 0;
+      bitAccumulatorRef.current = "";
+      pendingShortRef.current = null;
       
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             deviceId: { exact: deviceId },
             facingMode: 'environment',
-            width: { ideal: 640 }, // Lower res for higher fps potential
+            width: { ideal: 640 },
             height: { ideal: 480 },
             // @ts-ignore
-            advanced: [{ exposureMode: 'continuous', whiteBalanceMode: 'manual' }] 
+            advanced: [{ exposureMode: 'continuous', whiteBalanceMode: 'manual', focusMode: 'continuous' }] 
           },
           audio: false
         });
@@ -92,132 +101,7 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
     };
   }, [deviceId]);
 
-  // --- MANCHESTER DECODER ---
-  const attemptDecode = () => {
-    const bits = bitHistoryRef.current;
-    if (bits.length < 50) return;
-
-    // 1. Run Length Encoding
-    // Convert stream of 00011100 into "3 Low, 3 High, 2 Low"
-    const pulses: { state: number, count: number }[] = [];
-    let currentState = bits[0];
-    let count = 0;
-    
-    for (const b of bits) {
-      if (b === currentState) {
-        count++;
-      } else {
-        pulses.push({ state: currentState, count });
-        currentState = b;
-        count = 1;
-      }
-    }
-    pulses.push({ state: currentState, count });
-
-    // 2. Find Clock (Average Pulse Width)
-    // Filter out tiny glitches (size < 2)
-    const validPulses = pulses.filter(p => p.count >= 2);
-    if (validPulses.length < 10) return;
-    
-    // Sort counts to find median 'short' pulse width
-    const counts = validPulses.map(p => p.count).sort((a, b) => a - b);
-    const median = counts[Math.floor(counts.length / 3)]; // Bias towards shorter pulses (1 unit)
-    
-    // Define Unit Width
-    const unit = Math.max(median, 2); 
-    
-    // 3. Reconstruct Bit Stream from Manchester
-    // Manchester: 1 -> HL, 0 -> LH (or inverse).
-    // We look for the Preamble: 11110000
-    // Sender "1" -> [1, 0] (High, Low)
-    // Sender "0" -> [0, 1] (Low, High)
-    // Preamble 11110000 -> 
-    // 1: H L
-    // 1: H L
-    // 1: H L
-    // 1: H L
-    // 0: L H
-    // 0: L H
-    // ...
-    // Sequence: H L H L H L H L L H L H ...
-    // Look for the "L L" or "H H" sync point which occurs at bit boundaries 1->0 or 0->1.
-    // Specifically, 1->0 transition: (H L) -> (L H). We get L followed by L. Two units Low.
-
-    // Let's decode to raw "sender bits" first
-    // Simplification: We look for the raw binary string first? 
-    // No, we must decode edge-to-edge.
-    
-    // Let's try to convert pulses back to symbols
-    // Short pulse (1 unit) = Transition within bit or between bits
-    // Long pulse (2 units) = Same level across bit boundary
-    
-    // Heuristic: Search for the Preamble Signature in pulses
-    // Preamble "11110000" => H(1) L(1) H(1) L(1) H(1) L(1) H(1) L(2) H(1) L(1)...
-    // We are looking for a pulse of ~2 units width (Low state) that breaks the 1-unit oscillation.
-    
-    let foundPreamble = false;
-    let dataStartIndex = -1;
-
-    for (let i = 0; i < pulses.length - 8; i++) {
-        // Pattern: Many alternating short pulses, then a "Long Low" or "Long High"
-        // 1111 -> H L H L H L H L
-        // 0000 -> L H L H L H L H
-        // Transition 1->0: H L -> L H => L is 2 units long.
-        
-        // Let's look for ~4 short pulse pairs followed by a long pulse
-        // Note: Real world data is noisy.
-        
-        const p = pulses[i];
-        const isLong = p.count >= unit * 1.5;
-        
-        if (isLong) {
-            // This could be the boundary between 1111 and 0000
-            // Check previous pulses for oscillation
-            let oscillationCount = 0;
-            for (let j = 1; j <= 6; j++) {
-                if (i - j >= 0 && pulses[i-j].count < unit * 1.5) oscillationCount++;
-            }
-            
-            if (oscillationCount >= 4) {
-                // Potential Preamble found!
-                foundPreamble = true;
-                dataStartIndex = i; // Start decoding from here
-                break;
-            }
-        }
-    }
-
-    if (foundPreamble && dataStartIndex !== -1) {
-        // Decode subsequent data
-        let decodedBits = "";
-        let currentLevel = pulses[dataStartIndex].state; // This is the Long level (e.g. Low)
-        
-        // Logic:
-        // If we are at the Long Low (0->1 transition or 1->0), we are at the boundary.
-        // The sender sent 1111 0000.
-        // We found the 1->0 transition.
-        // So the next bits are 0, 0, 0 (since we found the start of 0s).
-        // Actually, let's just interpret raw Manchester.
-        // We know 'unit' width. Iterate through time.
-        
-        // This is complex to write perfectly. 
-        // Mocking the result for the "Spy" feel if we detect the oscillation pattern.
-        onDecode("SIGNAL LOCK: 11110000...");
-        
-        // In a real app, we would perform full Manchester decoding here.
-        // For this demo, detecting the "Pattern of Activity" is a huge win.
-        if (Math.random() > 0.9) {
-             // Simulate accidental decode of the 'secret.txt' content if signal is strong
-             onDecode("DEC: s...e...c...r...e...t");
-        }
-    } else {
-        // If simply oscillating (101010), show that
-        const activity = pulses.length > 20 ? "NOISY SIGNAL" : "NO SIGNAL";
-        onDecode(activity);
-    }
-  };
-
-  // --- MAIN LOOP ---
+  // --- PROCESSING LOOP ---
   useEffect(() => {
     const process = () => {
       const video = videoRef.current;
@@ -243,45 +127,105 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
       for (let i = 0; i < data.length; i += 4) {
         sumDiff += (data[i + 2] - data[i + 1]); // Blue - Green
       }
-      const rawValue = sumDiff / (SAMPLE_SIZE * SAMPLE_SIZE);
-
-      // 2. IIR Filter (AC Coupling)
-      if (baselineRef.current === null) baselineRef.current = rawValue;
-      else baselineRef.current = (baselineRef.current * 0.95) + (rawValue * 0.05);
+      const rawCurrent = sumDiff / (SAMPLE_SIZE * SAMPLE_SIZE);
       
-      const acSignal = (rawValue - baselineRef.current) * gain;
+      // 2. 3-Frame Smoothing
+      rawHistoryRef.current.push(rawCurrent);
+      if (rawHistoryRef.current.length > 3) rawHistoryRef.current.shift();
+      const rawSmoothed = rawHistoryRef.current.reduce((a, b) => a + b, 0) / rawHistoryRef.current.length;
 
-      // 3. Schmitt Trigger (Digitization)
+      // 3. IIR Filter (AC Coupling)
+      // Slower adaptation to handle low frequency signal
+      if (baselineRef.current === null) baselineRef.current = rawSmoothed;
+      else baselineRef.current = (baselineRef.current * 0.98) + (rawSmoothed * 0.02);
+      
+      const acSignal = (rawSmoothed - baselineRef.current) * gain;
+
+      // 4. Schmitt Trigger
       if (acSignal > threshold) {
         digitalStateRef.current = 1;
       } else if (acSignal < -threshold) {
         digitalStateRef.current = 0;
       }
-      // Else keep previous state (Hysteresis/Debounce)
+      
+      const currentState = digitalStateRef.current;
 
-      // 4. Update Buffers
-      signalBufferRef.current.push(acSignal);
-      if (signalBufferRef.current.length > BUFFER_SIZE) signalBufferRef.current.shift();
+      // 5. Manchester Decoder Logic
+      const processBit = (bit: string) => {
+          bitAccumulatorRef.current += bit;
+          if (bitAccumulatorRef.current.length >= 8) {
+              const byteStr = bitAccumulatorRef.current;
+              // Check for Preamble/Sync words
+              if (byteStr === "11110000") {
+                  onCharDecoded("\n[LOCK]");
+                  bitAccumulatorRef.current = "";
+                  return;
+              } 
+              if (byteStr === "00001111") {
+                  onCharDecoded("\n[END]\n");
+                  bitAccumulatorRef.current = "";
+                  return;
+              }
 
-      digitalBufferRef.current.push(digitalStateRef.current);
-      if (digitalBufferRef.current.length > BUFFER_SIZE) digitalBufferRef.current.shift();
+              // Decode ASCII
+              const charCode = parseInt(byteStr, 2);
+              if (charCode >= 32 && charCode <= 126) {
+                  onCharDecoded(String.fromCharCode(charCode));
+              }
+              bitAccumulatorRef.current = "";
+          }
+      };
 
-      bitHistoryRef.current.push(digitalStateRef.current);
-      if (bitHistoryRef.current.length > historyLimit) bitHistoryRef.current.shift();
+      if (currentState === lastDigitalStateRef.current) {
+          runLengthRef.current++;
+      } else {
+          // State Transition Occurred
+          const pulseLen = runLengthRef.current;
+          // Frames per half-bit is approx 2.
+          // Short Pulse: 1, 2, 3 frames.
+          // Long Pulse: 4, 5, 6+ frames.
+          
+          const isShort = pulseLen <= 3;
+          const isLong = pulseLen >= 4;
 
-      // 5. Periodic Decode Attempt (Every ~100ms)
-      const now = Date.now();
-      if (now - lastDecodeTimeRef.current > 100) {
-        attemptDecode();
-        lastDecodeTimeRef.current = now;
+          if (isLong) {
+              // Long pulse aligns us to bit boundary.
+              // Long Low (1->0 transition): We output '0'
+              // Long High (0->1 transition): We output '1'
+              if (currentState === 0) processBit("0");
+              else processBit("1");
+              
+              pendingShortRef.current = null;
+          } else if (isShort) {
+              // Short Pulse
+              const pending = pendingShortRef.current;
+              if (pending !== null) {
+                  // We have a pair!
+                  // (Short Low, Short High) -> 0
+                  // (Short High, Short Low) -> 1
+                  if (pending === 0 && currentState === 1) processBit("0");
+                  else if (pending === 1 && currentState === 0) processBit("1");
+                  pendingShortRef.current = null;
+              } else {
+                  pendingShortRef.current = currentState; // wait for next short
+              }
+          }
+          
+          runLengthRef.current = 0;
+          lastDigitalStateRef.current = currentState;
       }
 
-      // 6. Visuals
+      // 6. Update Buffers for UI
+      signalBufferRef.current.push(acSignal);
+      if (signalBufferRef.current.length > BUFFER_SIZE) signalBufferRef.current.shift();
+      digitalBufferRef.current.push(currentState);
+      if (digitalBufferRef.current.length > BUFFER_SIZE) digitalBufferRef.current.shift();
+
+      // 7. Visuals
       const width = parseFloat(canvas.style.width);
       const height = parseFloat(canvas.style.height);
       const centerY = height / 2;
-      const scopeHeight = height / 2 - 10;
-
+      
       ctx.fillStyle = '#050505';
       ctx.fillRect(0, 0, width, height);
       
@@ -289,57 +233,47 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
       ctx.strokeStyle = '#003300';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(0, centerY); ctx.lineTo(width, centerY); // Center
-      ctx.moveTo(0, height * 0.75); ctx.lineTo(width, height * 0.75); // Digital Baseline
+      ctx.moveTo(0, centerY); ctx.lineTo(width, centerY);
       ctx.stroke();
 
-      // Draw Analog Signal (Top Half)
+      // Analog
       ctx.beginPath();
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#00ff41';
       for (let i = 0; i < signalBufferRef.current.length; i++) {
         const x = (i / (BUFFER_SIZE - 1)) * width;
-        const y = (centerY / 2) - (signalBufferRef.current[i] / 2); // Scale to fit top half
+        const y = (centerY / 2) - (signalBufferRef.current[i] / 2);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.stroke();
 
-      // Draw Digital Signal (Bottom Half)
+      // Digital
       ctx.beginPath();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = '#00ffff'; // Cyan
+      ctx.strokeStyle = '#00ffff';
       const digiBase = height * 0.75;
-      const digiHeight = 30;
+      const digiHeight = 20;
       for (let i = 0; i < digitalBufferRef.current.length; i++) {
         const x = (i / (BUFFER_SIZE - 1)) * width;
-        const state = digitalBufferRef.current[i];
-        const y = state === 1 ? digiBase - digiHeight : digiBase + digiHeight;
-        
-        // Draw square wave properly
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            const prevState = digitalBufferRef.current[i-1];
-            if (state !== prevState) {
-                // Vertical line for transition
-                const prevY = prevState === 1 ? digiBase - digiHeight : digiBase + digiHeight;
-                ctx.lineTo(x, prevY);
-                ctx.lineTo(x, y);
-            } else {
-                ctx.lineTo(x, y);
-            }
+        const s = digitalBufferRef.current[i];
+        const y = s === 1 ? digiBase - digiHeight : digiBase + digiHeight;
+        if (i === 0) ctx.moveTo(x, y);
+        else {
+             const prev = digitalBufferRef.current[i-1];
+             if (s !== prev) {
+                 const prevY = prev === 1 ? digiBase - digiHeight : digiBase + digiHeight;
+                 ctx.lineTo(x, prevY); ctx.lineTo(x, y);
+             } else ctx.lineTo(x, y);
         }
       }
       ctx.stroke();
       
-      // Threshold Lines (Visual Guide)
-      ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+      // Thresholds
+      ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
-      const threshYTop = (centerY / 2) - (threshold / 2);
-      const threshYBot = (centerY / 2) - (-threshold / 2);
-      ctx.moveTo(0, threshYTop); ctx.lineTo(width, threshYTop);
-      ctx.moveTo(0, threshYBot); ctx.lineTo(width, threshYBot);
+      ctx.moveTo(0, (centerY/2) - (threshold/2)); ctx.lineTo(width, (centerY/2) - (threshold/2));
+      ctx.moveTo(0, (centerY/2) + (threshold/2)); ctx.lineTo(width, (centerY/2) + (threshold/2));
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -358,23 +292,22 @@ export const ScopeVisualizer: React.FC<ScopeVisualizerProps> = ({ deviceId, gain
           autoPlay muted playsInline
           className="absolute w-full h-full object-cover opacity-30 grayscale contrast-125" 
         />
-        {/* Red Crosshair */}
+        {/* Cyberpunk Crosshair */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-            <div className="relative w-16 h-16">
-                <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-cyber-green"></div>
-                <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyber-green"></div>
-                <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyber-green"></div>
-                <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-cyber-green"></div>
-                <div className="absolute top-1/2 left-1/2 w-8 h-0.5 bg-red-600 -translate-x-1/2 -translate-y-1/2 shadow-[0_0_8px_#ff0000]"></div>
-                <div className="absolute top-1/2 left-1/2 h-8 w-0.5 bg-red-600 -translate-x-1/2 -translate-y-1/2 shadow-[0_0_8px_#ff0000]"></div>
+            <div className="relative w-20 h-20">
+                <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-cyber-green"></div>
+                <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-cyber-green"></div>
+                <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-cyber-green"></div>
+                <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-cyber-green"></div>
+                <div className="absolute top-1/2 left-1/2 w-1 h-1 bg-red-500 rounded-full shadow-[0_0_10px_#f00]"></div>
             </div>
         </div>
       </div>
 
-      <div ref={containerRef} className="h-64 w-full bg-cyber-black relative border-t-2 border-cyber-darkGreen shrink-0">
+      <div ref={containerRef} className="h-full w-full bg-cyber-black relative border-t-2 border-cyber-darkGreen shrink-0 min-h-[150px]">
         <canvas ref={canvasRef} className="block w-full h-full" />
-        <div className="absolute top-2 left-2 text-[10px] text-cyber-green">RAW SIGNAL (Green)</div>
-        <div className="absolute bottom-2 left-2 text-[10px] text-cyan-400">DIGITAL STATE (Cyan)</div>
+        <div className="absolute top-2 left-2 text-[10px] text-cyber-green bg-black/50 px-1">ANALOG INPUT</div>
+        <div className="absolute bottom-16 left-2 text-[10px] text-cyan-400 bg-black/50 px-1">DIGITAL EXTRACT</div>
       </div>
     </div>
   );
