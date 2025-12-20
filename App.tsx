@@ -10,7 +10,9 @@ const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
 
 export default function App() {
-  const [gain, setGain] = useState<number>(50); // Default gain increased for AC coupled mode
+  const [gain, setGain] = useState<number>(100); // Higher default for digital detection
+  const [threshold, setThreshold] = useState<number>(30); // Schmitt trigger threshold
+  const [decodedText, setDecodedText] = useState<string>("WAITING FOR SIGNAL...");
   const [devices, setDevices] = useState<VideoDevice[]>([]);
   const [currentDeviceIndex, setCurrentDeviceIndex] = useState<number>(0);
   const [logs, setLogs] = useState<import('./types').LogEntry[]>([]);
@@ -57,9 +59,7 @@ export default function App() {
   useEffect(() => {
     const getDevices = async () => {
       try {
-        // Request permission first to get labels
         await navigator.mediaDevices.getUserMedia({ video: true });
-        
         const allDevices = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = allDevices
           .filter(device => device.kind === 'videoinput')
@@ -71,7 +71,6 @@ export default function App() {
         console.log(`Found ${videoDevices.length} cameras`);
         setDevices(videoDevices);
         
-        // Try to find environment facing camera first
         const backCameraIndex = videoDevices.findIndex(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment'));
         if (backCameraIndex !== -1) {
           setCurrentDeviceIndex(backCameraIndex);
@@ -85,16 +84,11 @@ export default function App() {
   }, []);
 
   const handleSwitchCamera = useCallback(() => {
-    if (devices.length < 2) {
-      console.log("No other cameras available to switch to.");
-      return;
-    }
+    if (devices.length < 2) return;
     setCurrentDeviceIndex(prev => (prev + 1) % devices.length);
-    console.log(`Switching to camera index: ${(currentDeviceIndex + 1) % devices.length}`);
-  }, [devices, currentDeviceIndex]);
+  }, [devices]);
 
   const handleReset = useCallback(() => {
-    // Force a re-mount/reload to reset baseline and state
     window.location.reload(); 
   }, []);
 
@@ -103,25 +97,34 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-cyber-black text-cyber-green font-mono overflow-hidden relative">
       {/* Top: Debug Logs */}
-      <div className="h-1/4 w-full z-50 pointer-events-none">
+      <div className="h-1/4 w-full z-50 pointer-events-none opacity-50 hover:opacity-100 transition-opacity">
         <DebugOverlay logs={logs} />
       </div>
 
-      {/* Center: Scope Visualizer (Takes up remaining space minus controls) */}
-      <div className="flex-1 relative w-full overflow-hidden">
+      {/* Center: Scope Visualizer */}
+      <div className="flex-1 relative w-full overflow-hidden flex flex-col">
+         <div className="absolute top-4 left-0 w-full text-center z-20 pointer-events-none">
+            <span className="bg-black/80 px-4 py-1 border border-cyber-green/30 text-xs tracking-[0.2em] text-cyan-400 font-bold shadow-[0_0_10px_rgba(0,255,255,0.3)]">
+               DECODED TEXT: {decodedText}
+            </span>
+         </div>
          <ScopeVisualizer 
             deviceId={activeDeviceId} 
-            gain={gain} 
+            gain={gain}
+            threshold={threshold}
+            onDecode={(text) => setDecodedText(text)}
          />
       </div>
 
       {/* Bottom: Controls */}
-      <div className="h-auto z-50 w-full bg-cyber-black border-t border-cyber-green p-2 pb-6">
+      <div className="h-auto z-50 w-full bg-cyber-black border-t border-cyber-green p-2 pb-6 shadow-[0_-5px_20px_rgba(0,50,0,0.5)]">
         <Controls 
           onSwitchCamera={handleSwitchCamera}
           onReset={handleReset}
           gain={gain}
           setGain={setGain}
+          threshold={threshold}
+          setThreshold={setThreshold}
           currentDeviceLabel={devices[currentDeviceIndex]?.label}
         />
       </div>
